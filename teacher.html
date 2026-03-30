@@ -88,6 +88,21 @@ button{font-family:inherit;border:none;cursor:pointer}
     </div>
   </details>
 
+  <!-- Admin Controls -->
+  <div style="display:flex;gap:10px;margin-bottom:24px;flex-wrap:wrap">
+    <button id="reset-btn" class="mf" onclick="confirmReset()" style="padding:10px 20px;background:rgba(255,51,102,.08);border:1px solid rgba(255,51,102,.25);border-radius:8px;color:#ff3366;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:.5px;transition:all .2s">🗑️ RESET ALL TEAMS</button>
+    <button class="mf" onclick="exportCSV()" style="padding:10px 20px;background:rgba(0,212,255,.08);border:1px solid rgba(0,212,255,.25);border-radius:8px;color:#00d4ff;font-size:13px;font-weight:700;cursor:pointer;letter-spacing:.5px;transition:all .2s">📊 EXPORT CSV</button>
+  </div>
+  <div id="reset-confirm" style="display:none;background:#141B2D;border:2px solid rgba(255,51,102,.4);border-radius:12px;padding:20px;margin-bottom:24px;text-align:center">
+    <div style="font-size:20px;margin-bottom:8px">⚠️</div>
+    <div style="font-size:15px;font-weight:700;color:#ff3366;margin-bottom:8px">Are you sure?</div>
+    <div style="font-size:13px;color:#6b7fa3;margin-bottom:16px;line-height:1.5">This will permanently delete ALL team data from the leaderboard. This action cannot be undone.</div>
+    <div style="display:flex;gap:10px;justify-content:center">
+      <button class="mf" onclick="executeReset()" style="padding:10px 24px;background:linear-gradient(135deg,#ff6b35,#ff3366);border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:700;cursor:pointer">YES, DELETE ALL</button>
+      <button class="mf" onclick="cancelReset()" style="padding:10px 24px;background:#1a2340;border:1px solid rgba(107,127,163,.2);border-radius:8px;color:#6b7fa3;font-size:13px;font-weight:700;cursor:pointer">CANCEL</button>
+    </div>
+  </div>
+
   <!-- Teams List -->
   <div class="hf" style="font-size:14px;font-weight:700;color:#e8ecf1;margin-bottom:14px;letter-spacing:1px">TEAM RANKINGS</div>
   <div id="teams-list"></div>
@@ -176,10 +191,10 @@ function startListening() {
     const teams = Object.values(data);
     document.getElementById("no-teams").style.display = teams.length === 0 ? "block" : "none";
 
-    // Sort: completed first (by time), then playing (by rooms desc), then gameover
+    // Sort: completed first (by time), then playing (by rooms desc), then gaveup, then gameover
     teams.sort((a, b) => {
-      const sa = a.status === "completed" ? 0 : a.status === "playing" ? 1 : 2;
-      const sb = b.status === "completed" ? 0 : b.status === "playing" ? 1 : 2;
+      const sa = a.status === "completed" ? 0 : a.status === "playing" ? 1 : a.status === "gaveup" ? 2 : 3;
+      const sb = b.status === "completed" ? 0 : b.status === "playing" ? 1 : b.status === "gaveup" ? 2 : 3;
       if (sa !== sb) return sa - sb;
       if (sa === 0) return (a.totalTime || Infinity) - (b.totalTime || Infinity); // fastest first
       if (sa === 1) return (b.roomsEscaped || 0) - (a.roomsEscaped || 0); // most rooms first
@@ -196,6 +211,7 @@ function renderSummary(teams) {
   const playing = teams.filter(t => t.status === "playing").length;
   const completed = teams.filter(t => t.status === "completed").length;
   const gameover = teams.filter(t => t.status === "gameover").length;
+  const gaveup = teams.filter(t => t.status === "gaveup").length;
   const avgLives = total > 0 ? (teams.reduce((s, t) => s + (t.lives || 0), 0) / total).toFixed(1) : "—";
 
   document.getElementById("summary-grid").innerHTML = `
@@ -203,6 +219,7 @@ function renderSummary(teams) {
     <div class="summary-card"><div class="summary-label">PLAYING</div><div class="summary-val mf" style="color:#00d4ff">${playing}</div></div>
     <div class="summary-card"><div class="summary-label">COMPLETED</div><div class="summary-val mf" style="color:#00ff88">${completed}</div></div>
     <div class="summary-card"><div class="summary-label">GAME OVER</div><div class="summary-val mf" style="color:#ff3366">${gameover}</div></div>
+    <div class="summary-card"><div class="summary-label">GAVE UP</div><div class="summary-val mf" style="color:#6b7fa3">${gaveup}</div></div>
     <div class="summary-card"><div class="summary-label">AVG LIVES</div><div class="summary-val mf" style="color:#ff6b35">${avgLives}</div></div>
   `;
 }
@@ -212,11 +229,13 @@ function renderTeams(teams) {
   let html = "";
 
   teams.forEach((t, i) => {
-    const statusClass = t.status === "completed" ? "completed" : t.status === "gameover" ? "gameover" : "";
+    const statusClass = t.status === "completed" ? "completed" : (t.status === "gameover" || t.status === "gaveup") ? "gameover" : "";
     const statusBadge = t.status === "completed"
       ? `<span class="status-badge status-completed mf">COMPLETED</span>`
       : t.status === "gameover"
       ? `<span class="status-badge status-gameover mf">GAME OVER</span>`
+      : t.status === "gaveup"
+      ? `<span class="status-badge status-gameover mf">GAVE UP</span>`
       : `<span class="status-badge status-playing mf">PLAYING</span>`;
 
     const rooms = t.rooms || {};
@@ -253,10 +272,81 @@ function renderTeams(teams) {
 // Auto-refresh elapsed times for playing teams every 10s
 setInterval(() => {
   if (dash.style.display !== "none") {
-    // The Firebase listener handles updates; this just refreshes elapsed display
-    // We trigger a lightweight re-render by reading cached data
+    // Firebase listener handles data updates; this refreshes elapsed display
   }
 }, 10000);
+
+// ═══════════════════════════════════════════════════════════════
+// ADMIN: RESET LEADERBOARD
+// ═══════════════════════════════════════════════════════════════
+window.confirmReset = function() {
+  document.getElementById("reset-confirm").style.display = "block";
+  document.getElementById("reset-btn").style.display = "none";
+};
+
+window.cancelReset = function() {
+  document.getElementById("reset-confirm").style.display = "none";
+  document.getElementById("reset-btn").style.display = "inline-block";
+};
+
+window.executeReset = function() {
+  db.ref("langlab-teams").remove().then(function() {
+    document.getElementById("reset-confirm").style.display = "none";
+    document.getElementById("reset-btn").style.display = "inline-block";
+    // Show success feedback
+    const btn = document.getElementById("reset-btn");
+    const origText = btn.innerHTML;
+    btn.innerHTML = "✅ ALL DATA CLEARED";
+    btn.style.borderColor = "rgba(0,255,136,.3)";
+    btn.style.color = "#00ff88";
+    setTimeout(function() {
+      btn.innerHTML = origText;
+      btn.style.borderColor = "rgba(255,51,102,.25)";
+      btn.style.color = "#ff3366";
+    }, 2500);
+  }).catch(function(err) {
+    alert("Error clearing data: " + err.message);
+    cancelReset();
+  });
+};
+
+// ═══════════════════════════════════════════════════════════════
+// ADMIN: EXPORT CSV
+// ═══════════════════════════════════════════════════════════════
+window.exportCSV = function() {
+  db.ref("langlab-teams").once("value", function(snapshot) {
+    const data = snapshot.val();
+    if (!data) { alert("No data to export."); return; }
+
+    const teams = Object.values(data);
+    teams.sort((a, b) => {
+      const sa = a.status === "completed" ? 0 : a.status === "playing" ? 1 : 2;
+      const sb = b.status === "completed" ? 0 : b.status === "playing" ? 1 : 2;
+      if (sa !== sb) return sa - sb;
+      if (sa === 0) return (a.totalTime || Infinity) - (b.totalTime || Infinity);
+      return (b.roomsEscaped || 0) - (a.roomsEscaped || 0);
+    });
+
+    let csv = "Rank,Team,Player 1,Player 2,Status,Rooms Escaped,Lives Left,Total Time (seconds),Rooms Detail\n";
+    teams.forEach(function(t, i) {
+      const rooms = t.rooms || {};
+      const roomDetail = [1,2,3,4,5].map(function(r) { return "R" + r + ":" + (rooms[r] || "locked"); }).join(" | ");
+      const totalSec = t.totalTime ? Math.floor(t.totalTime / 1000) : "";
+      const p2 = t.p2 || "";
+      csv += (i+1) + "," + '"' + (t.team||"") + '"' + "," + '"' + (t.p1||"") + '"' + "," + '"' + p2 + '"' + "," + (t.status||"") + "," + (t.roomsEscaped||0) + "," + (t.lives||0) + "," + totalSec + "," + '"' + roomDetail + '"' + "\n";
+    });
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "langlab-escape-results-" + new Date().toISOString().slice(0,10) + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+};
 </script>
 </body>
 </html>
